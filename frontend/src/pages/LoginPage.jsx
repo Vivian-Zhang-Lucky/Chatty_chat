@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
 import AuthImagePattern from "../components/AuthImagePattern";
@@ -126,4 +127,10 @@ const LoginPage = () => {
     </div>
   );
 };
+=======
+const LoginPage = () => {
+  return <div>LoginPage</div>;
+};
+
+>>>>>>> origin/main
 export default LoginPage;
