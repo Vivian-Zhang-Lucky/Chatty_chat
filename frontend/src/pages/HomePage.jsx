@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import { useChatStore } from "../store/useChatStore";
 
 import Sidebar from "../components/Sidebar";
@@ -21,9 +20,5 @@ const HomePage = () => {
       </div>
     </div>
   );
-=======
-const HomePage = () => {
-  return <div>HomePage</div>;
->>>>>>> origin/main
 };
 export default HomePage;
