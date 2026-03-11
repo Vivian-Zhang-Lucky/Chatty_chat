@@ -4,23 +4,22 @@ let kem= null;
 
 export async function initKyberLib () {
     // Initialize the WebAssembly module
-    try {
-        if (!kem) {
-            kem = await initKyber();
-            if (!kem) throw new Error("Fail to init kyber.")
-        }
-    } catch (e) {
-        throw new Error(e);
+    if (!kem) {
+        kem = await initKyber();
+        if (!kem) throw new Error("Fail to init kyber.")
     }
 }
 
 export function u8ToBase64(u8) {
     return btoa(String.fromCharCode(...u8));
 }
-
-// Base64 → Uint8Array
 export function base64ToU8(b64) {
-    return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const binaryString = atob(b64);
+    const u8 = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        u8[i] = binaryString.charCodeAt(i);
+    }
+    return u8;
 }
 
 // IndexedDB helpers for storing Uint8Array
@@ -38,6 +37,12 @@ function openDB() {
     });
 }
 
+/**
+ *
+ * @param {Uint8Array} name
+ * @param {Uint8Array}value
+ * @returns {Promise<unknown>}
+ */
 async function setKey(name, value) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -49,6 +54,11 @@ async function setKey(name, value) {
     });
 }
 
+/**
+ *
+ * @param {Uint8Array}name
+ * @returns {Promise<unknown>}
+ */
 async function getKey(name) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -62,36 +72,69 @@ async function getKey(name) {
 
 
 // AES-GCM encryption/decryption helpers
-async function aesGcmEncrypt(sharedKey, iv, plaintext) {
-    const key = await crypto.subtle.importKey(
+/**
+ *
+ * @param {Uint8Array}sharedSecret
+ * @param {Uint8Array}salt
+ * @returns {Promise<CryptoKey>}
+ */
+async function deriveAesGcmKey(sharedSecret, salt) {
+    const keyMaterial = await crypto.subtle.importKey(
         "raw",
-        sharedKey,
-        "AES-GCM",
+        sharedSecret,
+        "HKDF",
         false,
-        ["encrypt"]
+        ["deriveKey"]
     );
+
+    return crypto.subtle.deriveKey(
+        {
+            name: "HKDF",
+            hash: "SHA-256",
+            salt,
+            info: new TextEncoder().encode("AES-GCM key"),
+        },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+    );
+}
+
+/**
+ *
+ * @param {Uint8Array}sharedKey
+ * @param {Uint8Array}iv
+ * @param plaintext
+ * @returns {Promise<{ciphertext: Uint8Array, salt: Uint8Array}>}
+ */
+async function aesGcmEncrypt(sharedKey, iv, plaintext) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const aesKey = await deriveAesGcmKey(sharedKey, salt);
 
     const encryptedBuffer = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv },
-        key,
+        aesKey,
         new TextEncoder().encode(plaintext)
     );
 
-    return new Uint8Array(encryptedBuffer);
+    return { salt, ciphertext: new Uint8Array(encryptedBuffer) };
 }
 
-async function aesGcmDecrypt(sharedKey, iv, ciphertext) {
-    const key = await crypto.subtle.importKey(
-        "raw",
-        sharedKey,
-        "AES-GCM",
-        false,
-        ["decrypt"]
-    );
+/**
+ *
+ * @param {Uint8Array}sharedKey
+ * @param {Uint8Array}salt
+ * @param {Uint8Array}iv
+ * @param {Uint8Array}ciphertext
+ * @returns {Promise<string>}
+ */
+async function aesGcmDecrypt(sharedKey, salt, iv, ciphertext) {
+    const aesKey = await deriveAesGcmKey(sharedKey, salt);
 
     const decryptedBuffer = await crypto.subtle.decrypt(
         { name: "AES-GCM", iv },
-        key,
+        aesKey,
         ciphertext
     );
 
@@ -99,100 +142,139 @@ async function aesGcmDecrypt(sharedKey, iv, ciphertext) {
 }
 
 // Generate keypair
+/**
+ *
+ * @param {string}name
+ * @returns {Promise<string>}
+ */
 export async function generateKeyPair(name) {
-    try {
-        const {publicKey, privateKey} = await kem.keypair();
-        await setKey(name, u8ToBase64(privateKey));
+    const {publicKey, privateKey} = await kem.keypair();
 
-        console.log("Name:", name);
-        console.log("skey:", privateKey);
-        console.log("pkey:", publicKey);
-        console.log("Private key saved successfully");
+    await setKey(name, privateKey);
 
-        return u8ToBase64(publicKey);
-    } catch (e) {
-        throw new Error(e);
-    }
+    console.log("Name:", name);
+    console.log("skey:", u8ToBase64(privateKey)); // log Base64
+    console.log("pkey:", u8ToBase64(publicKey));  // log Base64
+    console.log("Private key saved successfully");
+
+    return u8ToBase64(publicKey);
 }
 
 // Encrypt a message
+/**
+ *
+ * @param {string}publicKey
+ * @param {string}message
+ * @returns {Promise<{ct: string, salt: string, encrypted: string, iv: string}>}
+ */
 export async function encMessage(publicKey, message) {
-    try {
-        let sharedSecret, ct;
-        const cachedSecret = await getKey(publicKey);
-        if (cachedSecret) {
-            sharedSecret = base64ToU8(cachedSecret);
-            ct = await getKey(cachedSecret);
-        }
-        if (!ct) {
-            const { ciphertext, sharedSecret: ss} = await kem.encapsulate(base64ToU8(publicKey));
-            sharedSecret = ss;
-            ct = ciphertext;
-            await setKey(publicKey, u8ToBase64(sharedSecret));
-            await setKey(u8ToBase64(sharedSecret), u8ToBase64(ct));
-        }
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const encrypted = await aesGcmEncrypt(sharedSecret, iv, message);
-        console.log("message:", message);
-        console.log("pkey:", base64ToU8(publicKey));
-        console.log("shared:", sharedSecret);
-        console.log("ct:", ct);
-        console.log("iv:", iv);
-        console.log("encrypted:", encrypted);
+    let sharedSecret, ct;
 
-        return {
-            ct: u8ToBase64(ct),
-            iv: u8ToBase64(iv),
-            encrypted: u8ToBase64(encrypted)
-        };
-    } catch (e) {
-        throw new Error(e);
+    const cachedSecret = await getKey(base64ToU8(publicKey));
+
+    if (cachedSecret !== undefined) {
+        sharedSecret = cachedSecret;
+        ct = await getKey(cachedSecret);
     }
+
+    if (ct === undefined) {
+        const { ciphertext, sharedSecret: ss } =
+            await kem.encapsulate(base64ToU8(publicKey));
+
+        sharedSecret = ss;
+        ct = ciphertext;
+
+        await setKey(base64ToU8(publicKey), sharedSecret);
+        await setKey(sharedSecret, ct);
+    }
+
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const { salt, ciphertext: encrypted } =
+        await aesGcmEncrypt(sharedSecret, iv, message);
+
+    // Log values as Base64
+    console.log("message:", message);
+    console.log("pkey:", publicKey);
+    console.log("shared:", u8ToBase64(sharedSecret));
+    console.log("ct:", u8ToBase64(ct));
+    console.log("iv:", u8ToBase64(iv));
+    console.log("salt:", u8ToBase64(salt));
+    console.log("encrypted:", u8ToBase64(encrypted));
+
+    // Return Base64 values
+    return {
+        ct: u8ToBase64(ct),
+        iv: u8ToBase64(iv),
+        salt: u8ToBase64(salt),
+        encrypted: u8ToBase64(encrypted)
+    };
 }
 
 // Decrypt a message
+/**
+ *
+ * @param {string}name
+ * @param cipherText
+ * @returns {Promise<{message: string}>}
+ */
 export async function decMessage(name, cipherText) {
-    try {
-        const skey = await getKey(name);
-        if (!skey) throw new Error(`Private key for '${name}' not found`);
-        console.log("name:", name);
-        console.log("skey:", base64ToU8(skey));
+    const skey = await getKey(name);
+    if (!skey) throw new Error(`Private key for '${name}' not found`);
 
-        console.log("ct:",base64ToU8(cipherText.ct));
-        console.log("encrypted:",base64ToU8(cipherText.encrypted));
-        console.log("iv:",base64ToU8(cipherText.iv));
-        const {sharedSecret} = await kem.decapsulate(base64ToU8(cipherText.ct), base64ToU8(skey));
-        console.log("shared:", sharedSecret);
-        const decrypted = await aesGcmDecrypt(sharedSecret, base64ToU8(cipherText.iv), base64ToU8(cipherText.encrypted));
+    console.log("name:", name);
+    console.log("skey:", u8ToBase64(skey));
 
-        console.log("decrypted:", decrypted);
-        return {
-            message: decrypted
-        };
-    } catch (e) {
-        throw new Error(e);
-    }
+    console.log("ct:", cipherText.ct);
+    console.log("encrypted:", cipherText.encrypted);
+    console.log("iv:", cipherText.iv);
+
+    const { sharedSecret } =
+        await kem.decapsulate(base64ToU8(cipherText.ct), skey);
+
+    console.log("shared:", u8ToBase64(sharedSecret));
+    console.log("salt:", cipherText.salt);
+
+    const decrypted = await aesGcmDecrypt(
+        sharedSecret,
+        base64ToU8(cipherText.salt),
+        base64ToU8(cipherText.iv),
+        base64ToU8(cipherText.encrypted)
+    );
+
+    console.log("decrypted:", decrypted);
+
+    return { message: decrypted };
 }
 
 // Decrypt my message
+/**
+ *
+ * @param {string}publicKey
+ * @param cipherText
+ * @returns {Promise<{message: string}>}
+ */
 export async function decMyMessage(publicKey, cipherText) {
-    try {
-        if (!publicKey) throw new Error(`SelectedUser's public key for not found`);
+    if (!publicKey) throw new Error(`SelectedUser's public key not found`);
 
-        const cachedSecret = await getKey(publicKey);
-        if (!cachedSecret) throw new Error("Shared secret for this public key not found");
-        console.log("publicKey:", publicKey);
-        console.log("ct:",cipherText.ct);
-        console.log("encrypted:",cipherText.encrypted);
-        console.log("iv:",cipherText.iv);
-        console.log("shared:", cachedSecret);
-        const decrypted = await aesGcmDecrypt(base64ToU8(cachedSecret), base64ToU8(cipherText.iv), base64ToU8(cipherText.encrypted));
+    const cachedSecret = await getKey(base64ToU8(publicKey));
+    if (!cachedSecret)
+        throw new Error("Shared secret for this public key not found");
 
-        console.log("decrypted:", decrypted);
-        return {
-            message: decrypted
-        };
-    } catch (e) {
-        throw new Error(e);
-    }
+    console.log("publicKey:", publicKey);
+    console.log("ct:", cipherText.ct);
+    console.log("encrypted:", cipherText.encrypted);
+    console.log("iv:", cipherText.iv);
+    console.log("shared:", u8ToBase64(cachedSecret));
+    console.log("salt:", cipherText.salt);
+
+    const decrypted = await aesGcmDecrypt(
+        cachedSecret,
+        base64ToU8(cipherText.salt),
+        base64ToU8(cipherText.iv),
+        base64ToU8(cipherText.encrypted)
+    );
+
+    console.log("decrypted:", decrypted);
+
+    return { message: decrypted };
 }

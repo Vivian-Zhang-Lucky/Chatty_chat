@@ -15,6 +15,7 @@ const messageSchema = new mongoose.Schema(
     content: {
       iv: String,
       ct: String,
+      salt: String,
       encrypted: String,
     },
     image: {

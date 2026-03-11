@@ -22,7 +22,8 @@ const userSchema = new mongoose.Schema(
     },
     publicKey: {
       type: String,
-      default: "",
+      required: true,
+      unique: true,
     }
   },
   { timestamps: true }
