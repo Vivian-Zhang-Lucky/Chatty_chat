@@ -12,7 +12,13 @@ const messageSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    content: {
+    senderContent: {
+      iv: String,
+      ct: String,
+      salt: String,
+      encrypted: String,
+    },
+    receiverContent: {
       iv: String,
       ct: String,
       salt: String,
