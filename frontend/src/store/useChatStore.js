@@ -2,7 +2,7 @@ import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
 import { useAuthStore } from "./useAuthStore";
-import {encMessage, decMessage, decMyMessage } from "../lib/kybercrypto.js"
+import { encMessage, decMessage } from "../lib/kybercrypto.js";
 
 export const useChatStore = create((set, get) => ({
   messages: [],
@@ -39,16 +39,20 @@ export const useChatStore = create((set, get) => ({
       const decryptedMessages = await Promise.all(
           res.data.map(async (msg) => {
             let decryptedText= null;
-            if (msg.content?.encrypted && authUser?.email) {
+
+            // if (msg.content?.encrypted && authUser?.email) {
+            if (authUser?.email) {
               try {
                 if (authUser._id === msg.senderId) {
-                  const dec = await decMyMessage(selectedUser.publicKey, msg.content);
+                //   const dec = await decMyMessage(selectedUser.publicKey, msg.content);
+                  const dec = await decMessage(authUser.email, msg.senderContent);
                   decryptedText = dec.message;
                 } else {
-                  const dec = await decMessage(authUser.email, msg.content);
+                  const dec = await decMessage(authUser.email, msg.receiverContent);
                   decryptedText = dec.message;
                 }
                 console.log(decryptedText);
+                
               } catch (e) {
                 console.error("Failed to decrypt message:", msg, e);
               }
@@ -69,14 +73,23 @@ export const useChatStore = create((set, get) => ({
     try {
       const { authUser } = useAuthStore.getState();
       const plaintext = messageData.text?.trim();
-      let encryptedMessage = null;
+      // let encryptedMessage = null;
+      let receiverEncrypted = null;
+      let senderEncrypted = null;
       if (plaintext) {
-        encryptedMessage = await encMessage(selectedUser.publicKey, plaintext);
+        // encryptedMessage = await encMessage(selectedUser.publicKey, plaintext);
+        receiverEncrypted = await encMessage(selectedUser.publicKey, plaintext);
+        senderEncrypted = await encMessage(authUser.publicKey, plaintext);
       }
       const payload = {
         senderId: authUser._id,
         receiverId: selectedUser._id,
-        ...(plaintext && { content: encryptedMessage}),
+        ...(plaintext && 
+          { 
+            // content: encryptedMessage
+            receiverContent: receiverEncrypted,
+            senderContent: senderEncrypted,
+          }),
         ...(messageData.image && { image: messageData.image }),
       };
       console.log(payload);
@@ -96,23 +109,62 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
+  // BUG FIX:
+// Previously, realtime messages received via socket were directly appended to the
+// messages state without being decrypted. Since the UI renders message.text,
+// the encrypted message content had no text field, resulting in an empty message
+// bubble being displayed until the page was refreshed.
+//
+// The page refresh worked because getMessages() decrypts all historical messages
+// before setting them into state. However, realtime messages bypassed this logic.
+//
+// Fix:
+// 1. Decrypt the incoming message content using decMessage()
+// 2. Map the decrypted result into the "text" field
+// 3. Append the processed message to the messages state
+//
+// This ensures realtime messages are immediately readable without requiring a page refresh.
   subscribeToMessages: () => {
-    const { selectedUser } = get();
-    if (!selectedUser) return;
+  const socket = useAuthStore.getState().socket;
+  if (!socket) return console.warn("Socket not initialized");
 
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return console.warn("Socket not initialized");
+  // Avoid duplicate bindings
+  socket.off("newMessage");
 
-    socket.on("newMessage", (newMessage) => {
-      const isMessageSentFromSelectedUser =
-        newMessage.senderId === selectedUser._id;
-      if (!isMessageSentFromSelectedUser) return;
+  socket.on("newMessage", async (newMessage) => {
+    const { authUser } = useAuthStore.getState();
+    const { selectedUser, messages } = get();
 
-      set({
-        messages: [...get().messages, newMessage],
-      });
+    if (!selectedUser || !authUser) return;
+
+    // Only process messages from the current chat partner
+    const isMessageSentFromSelectedUser =
+      newMessage.senderId === selectedUser._id;
+
+    if (!isMessageSentFromSelectedUser) return;
+
+    let decryptedText = null;
+
+    try {
+     if (authUser?.email) {
+      const dec = await decMessage(authUser.email, newMessage.receiverContent);
+      decryptedText = dec.message;
+}
+    } catch (e) {
+      console.error("Failed to decrypt realtime message:", newMessage, e);
+    }
+
+    set({
+      messages: [
+        ...messages,
+        {
+          ...newMessage,
+          text: decryptedText,
+        },
+      ],
     });
-  },
+  });
+},
 
   unsubscribeFromMessages: () => {
     const socket = useAuthStore.getState().socket;

@@ -278,3 +278,61 @@ export async function decMyMessage(publicKey, cipherText) {
 
     return { message: decrypted };
 }
+
+
+export async function downloadPrivateKeyBackup(name) {
+  try {
+    const privateKey = await getKey(name);
+    if (!privateKey) throw new Error("Private key not found");
+
+    const backupData = {
+      email: name,
+      privateKey: u8ToBase64(privateKey),
+      createdAt: new Date().toISOString(),
+    };
+
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], {
+      type: "application/json",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name}-private-key-backup.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    throw new Error(e.message || "Failed to download private key backup");
+  }
+}
+
+export async function importPrivateKeyBackup(file) {
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    if (!data.email || !data.privateKey) {
+      throw new Error("Invalid private key backup file");
+    }
+
+   // Convert Base64 back to Uint8Array before saving
+    await setKey(data.email, base64ToU8(data.privateKey));
+
+    console.log("Imported private key type:", typeof data.privateKey);
+    console.log("Restored private key:", base64ToU8(data.privateKey));
+
+    return {
+      email: data.email,
+      success: true,
+    };
+  } catch (e) {
+    throw new Error(e.message || "Failed to import private key backup");
+  }
+}
+
+export async function hasPrivateKey(name) {
+  const privateKey = await getKey(name);
+  return !!privateKey;
+}

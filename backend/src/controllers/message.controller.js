@@ -1,4 +1,4 @@
-import User from "../models/user.model.js";
+  import User from "../models/user.model.js";
 import Message from "../models/message.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
@@ -39,7 +39,8 @@ export const getMessages = async (req, res) => {
 
 export const sendMessage = async (req, res) => {
   try {
-    const { content, image } = req.body;
+    // const { content, image } = req.body;
+    const { senderContent, receiverContent, image } = req.body;
     const { id: receiverId } = req.params;
     const senderId = req.user._id;
 
@@ -53,7 +54,8 @@ export const sendMessage = async (req, res) => {
     const newMessage = new Message({
       senderId,
       receiverId,
-      content,
+      senderContent,
+      receiverContent,
       image: imageUrl,
     });
 
