@@ -2,12 +2,13 @@ import { create } from "zustand";
 import { axiosInstance } from "../lib/axios.js";
 import toast from "react-hot-toast";
 import { io } from "socket.io-client";
-// import {generateKeyPair} from "../lib/kybercrypto.js"
 import {
   generateKeyPair,
-  downloadPrivateKeyBackup,
-  hasPrivateKey,
+  encryptPrivateKeyWithPassword,
+  decryptPrivateKeyWithPassword,
+  restorePrivateKeyToIndexedDB,
 } from "../lib/kybercrypto.js";
+
 
 const BASE_URL =
   import.meta.env.MODE === "development" ? "http://localhost:5001" : "/";
@@ -36,23 +37,31 @@ export const useAuthStore = create((set, get) => ({
   },
 
 
-// SECURITY NOTE:
-// The private key is never sent to the server.
-// It is stored locally in IndexedDB and a backup copy
-// is downloaded to the user's device for recovery
-// when switching browsers or devices.
+
   signup: async (data) => {
     set({ isSigningUp: true });
   try {
-    data.publicKey = await generateKeyPair(data.email);
+    const { publicKey, privateKey } = await generateKeyPair(data.email);
+    const { encryptedPrivateKey, keySalt, keyIv } =
+      await encryptPrivateKeyWithPassword(privateKey, data.password);
+      console.log("signup publicKey =", publicKey);
+      console.log("signup encryptedPrivateKey =", encryptedPrivateKey);
+      console.log("signup keySalt =", keySalt);
+      console.log("signup keyIv =", keyIv);
 
-    const res = await axiosInstance.post("/auth/signup", data);
+    
+
+    const payload = {
+      ...data,
+      publicKey,
+      encryptedPrivateKey,
+      keySalt,
+      keyIv,
+    };
+
+    const res = await axiosInstance.post("/auth/signup", payload);
     set({ authUser: res.data });
-
-    // 注册成功后自动下载私钥备份
-    await downloadPrivateKeyBackup(data.email);
-
-    toast.success("Account created successfully. Your private key backup has been downloaded.");
+    toast.success("Account created successfully.");
     get().connectSocket();
   } catch (error) {
     toast.error(error.response?.data?.message || error.message);
@@ -65,18 +74,23 @@ export const useAuthStore = create((set, get) => ({
   set({ isLoggingIn: true });
   try {
     const res = await axiosInstance.post("/auth/login", data);
-    set({ authUser: res.data });
-    toast.success("Logged in successfully");
-
-    get().connectSocket();
-    // 检查当前浏览器是否有私钥
-    const hasKey = await get().checkPrivateKeyExists(data.email);
-
-    if (!hasKey) {
-      toast.error("Private key not found in this browser. Please upload your backup key.");
-      console.warn("Private key missing for this browser session");
+    const user = res.data;
+    console.log("login response user =", user);
+    console.log("has encryptedPrivateKey?", !!user.encryptedPrivateKey);
+    console.log("has keySalt?", !!user.keySalt);
+    console.log("has keyIv?", !!user.keyIv);
+    if (user.encryptedPrivateKey && user.keySalt && user.keyIv) {
+      const privateKey = await decryptPrivateKeyWithPassword(
+        user.encryptedPrivateKey,
+        data.password,
+        user.keySalt,
+        user.keyIv
+      );
+      await restorePrivateKeyToIndexedDB(user.email, privateKey);
     }
-
+    set({ authUser: user})
+    toast.success("Logged in successfully");
+    get().connectSocket();
     return res.data;
   } catch (error) {
     toast.error(error.response?.data?.message || error.message);
@@ -132,12 +146,5 @@ export const useAuthStore = create((set, get) => ({
     if (get().socket?.connected) get().socket.disconnect();
   },
 
-  checkPrivateKeyExists: async (email) => {
-  try {
-    return await hasPrivateKey(email);
-  } catch (error) {
-    console.log("Error checking private key:", error);
-    return false;
-  }
-  },
+  
 }));

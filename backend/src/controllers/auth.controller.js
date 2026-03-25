@@ -4,9 +4,16 @@ import bcrypt from "bcryptjs";
 import cloudinary from "../lib/cloudinary.js";
 
 export const signup = async (req, res) => {
-  const { fullName, email, password, publicKey } = req.body;
+  const { fullName, 
+          email, 
+          password, 
+          publicKey,
+          encryptedPrivateKey,
+          keySalt,
+          keyIv,
+         } = req.body;
   try {
-    if (!fullName || !email || !password || !publicKey) {
+    if (!fullName || !email || !password || !publicKey||!encryptedPrivateKey ||!keySalt || !keyIv) {
       // Users must input their fullName, email and password
       return res.status(400).json({ message: "All fields are required" });
     }
@@ -29,7 +36,10 @@ export const signup = async (req, res) => {
       fullName: fullName,
       email: email,
       password: hashedPassword,
-      publicKey: publicKey
+      publicKey: publicKey,
+      encryptedPrivateKey: encryptedPrivateKey,
+      keySalt: keySalt,
+      keyIv: keyIv,
     });
 
     if (newUser) {
@@ -42,7 +52,10 @@ export const signup = async (req, res) => {
         fullName: newUser.fullName,
         email: newUser.email,
         profilePic: newUser.profilePic,
-        publicKey: newUser.publicKey
+        publicKey: newUser.publicKey,
+        encryptedPrivateKey: newUser.encryptedPrivateKey,
+        keySalt: newUser.keySalt,
+        keyIv: newUser.keyIv,
       });
     } else {
       res.status(400).json({ message: "Invalid user data" });
@@ -73,7 +86,10 @@ export const login = async (req, res) => {
       fullName: user.fullName,
       email: user.email,
       profilePic: user.profilePic,
-      publicKey: user.publicKey
+      publicKey: user.publicKey,
+      encryptedPrivateKey: user.encryptedPrivateKey,
+      keySalt: user.keySalt,
+      keyIv: user.keyIv,
     });
   } catch (error) {
     console.log("Error in login controller", error.message);

@@ -24,7 +24,16 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
       unique: true,
-    }
+    },
+    encryptedPrivateKey: {
+      type: String,
+    },
+    keySalt: {
+      type: String,
+    },
+    keyIv: {
+      type: String,
+    },
   },
   { timestamps: true }
 );
