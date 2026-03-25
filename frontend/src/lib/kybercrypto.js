@@ -157,7 +157,10 @@ export async function generateKeyPair(name) {
     console.log("pkey:", u8ToBase64(publicKey));  // log Base64
     console.log("Private key saved successfully");
 
-    return u8ToBase64(publicKey);
+    return {
+        publicKey:u8ToBase64(publicKey),
+        privateKey
+    };
 }
 
 // Encrypt a message
@@ -280,59 +283,80 @@ export async function decMyMessage(publicKey, cipherText) {
 }
 
 
-export async function downloadPrivateKeyBackup(name) {
-  try {
-    const privateKey = await getKey(name);
-    if (!privateKey) throw new Error("Private key not found");
+export async function encryptPrivateKeyWithPassword(privateKey, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
 
-    const backupData = {
-      email: name,
-      privateKey: u8ToBase64(privateKey),
-      createdAt: new Date().toISOString(),
-    };
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
 
-    const blob = new Blob([JSON.stringify(backupData, null, 2)], {
-      type: "application/json",
-    });
+  const aesKey = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt,
+      iterations: 100000,
+      hash: "SHA-256",
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${name}-private-key-backup.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  } catch (e) {
-    throw new Error(e.message || "Failed to download private key backup");
-  }
+  const encryptedBuffer = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    aesKey,
+    privateKey
+  );
+
+  return {
+    encryptedPrivateKey: u8ToBase64(new Uint8Array(encryptedBuffer)),
+    keySalt: u8ToBase64(salt),
+    keyIv: u8ToBase64(iv),
+  };
 }
 
-export async function importPrivateKeyBackup(file) {
-  try {
-    const text = await file.text();
-    const data = JSON.parse(text);
+export async function decryptPrivateKeyWithPassword(
+  encryptedPrivateKey,
+  password,
+  keySalt,
+  keyIv
+) {
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
 
-    if (!data.email || !data.privateKey) {
-      throw new Error("Invalid private key backup file");
-    }
+  const aesKey = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: base64ToU8(keySalt),
+      iterations: 100000,
+      hash: "SHA-256",
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
 
-   // Convert Base64 back to Uint8Array before saving
-    await setKey(data.email, base64ToU8(data.privateKey));
+  const decryptedBuffer = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToU8(keyIv) },
+    aesKey,
+    base64ToU8(encryptedPrivateKey)
+  );
 
-    console.log("Imported private key type:", typeof data.privateKey);
-    console.log("Restored private key:", base64ToU8(data.privateKey));
-
-    return {
-      email: data.email,
-      success: true,
-    };
-  } catch (e) {
-    throw new Error(e.message || "Failed to import private key backup");
-  }
+  return new Uint8Array(decryptedBuffer);
 }
 
-export async function hasPrivateKey(name) {
-  const privateKey = await getKey(name);
-  return !!privateKey;
+export async function restorePrivateKeyToIndexedDB(name, privateKey) {
+  await setKey(name, privateKey);
 }
