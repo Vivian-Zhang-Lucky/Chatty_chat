@@ -16,19 +16,34 @@ const messageSchema = new mongoose.Schema(
       iv: String,
       ct: String,
       salt: String,
-      encrypted: String,
+      tag: String,
     },
     receiverContent: {
       iv: String,
       ct: String,
       salt: String,
-      encrypted: String,
+      tag: String,
     },
-    image: {
-      type: String,
+    senderFileTag: {
+      iv: String,
+      ct: String,
+      salt: String,
+      src: String,
+      fileName: String,
+      fileType: String,
+      fileSize: Number,
+    },
+    receiverFileTag: {
+      iv: String,
+      ct: String,
+      salt: String,
+      src: String,
+      fileName: String,
+      fileType: String,
+      fileSize: Number,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 const Message = mongoose.model("Message", messageSchema);

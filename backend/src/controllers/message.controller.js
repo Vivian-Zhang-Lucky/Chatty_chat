@@ -3,6 +3,34 @@ import Message from "../models/message.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
 
+export const getUploadUrl = async (req, res) => {
+  try {
+    const {fileName} = req.query;
+    const timestamp = Math.round(new Date().getTime() / 1000);
+    const publicId = `raw_uploads/${Date.now()}-${fileName}`;
+    const signature = cloudinary.utils.api_sign_request(
+        {
+          timestamp: timestamp,
+          public_id: publicId,
+        },
+        process.env.CLOUDINARY_API_SECRET
+    );
+    const uploadEndpoint = `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/raw/upload`;
+    const finalFileUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/raw/upload/${publicId}`;
+    res.status(200).json({
+      uploadEndpoint,
+      finalFileUrl,
+      signature,
+      timestamp,
+      publicId,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+    });
+  } catch (error) {
+    console.error("Error in getUploadUrl: ", error.message);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 export const getUsersForSidebar = async (req, res) => {
   try {
     const loggedInUserId = req.user._id;
@@ -40,24 +68,19 @@ export const getMessages = async (req, res) => {
 export const sendMessage = async (req, res) => {
   try {
     // const { content, image } = req.body;
-    const { senderContent, receiverContent, image } = req.body;
+    const { senderContent, receiverContent, senderFileTag, receiverFileTag} = req.body;
     const { id: receiverId } = req.params;
     const senderId = req.user._id;
-
-    let imageUrl;
-    if (image) {
-      // Upload base64 image to cloudinary
-      const uploadResponse = await cloudinary.uploader.upload(image);
-      imageUrl = uploadResponse.secure_url;
-    }
 
     const newMessage = new Message({
       senderId,
       receiverId,
-      senderContent,
-      receiverContent,
-      image: imageUrl,
+      senderContent: senderContent ?? undefined,
+      receiverContent: receiverContent ?? undefined,
+      senderFileTag: senderFileTag ?? undefined,
+      receiverFileTag: receiverFileTag ?? undefined,
     });
+    console.log("newMes:", newMessage);
 
     await newMessage.save();
 

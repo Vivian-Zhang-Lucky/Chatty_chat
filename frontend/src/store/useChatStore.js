@@ -2,7 +2,7 @@ import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
 import { useAuthStore } from "./useAuthStore";
-import { encMessage, decMessage } from "../lib/kybercrypto.js";
+import { encMessage, decMessage, encFile, decFile } from "../lib/kybercrypto.js";
 
 export const useChatStore = create((set, get) => ({
   messages: [],
@@ -39,17 +39,36 @@ export const useChatStore = create((set, get) => ({
       const decryptedMessages = await Promise.all(
           res.data.map(async (msg) => {
             let decryptedText= null;
+            let imageObjectUrl;
 
             // if (msg.content?.encrypted && authUser?.email) {
             if (authUser?.email) {
               try {
                 if (authUser._id === msg.senderId) {
-                //   const dec = await decMyMessage(selectedUser.publicKey, msg.content);
-                  const dec = await decMessage(authUser.email, msg.senderContent);
-                  decryptedText = dec.message;
+                  if (msg.senderContent) {
+                    //   const dec = await decMyMessage(selectedUser.publicKey, msg.content);
+                    const dec = await decMessage(authUser.email, msg.senderContent);
+                    decryptedText = dec.message;
+                  }
+                  if (msg.senderFileTag) {
+                    const response = await fetch(msg.senderFileTag.src);
+                    const buffer = await response.arrayBuffer();
+                    const image = await decFile(authUser.email, msg.senderFileTag, new Uint8Array(buffer));
+                    const imageBlob = new Blob([image], {type: msg.senderFileTag.fileType});
+                    imageObjectUrl = URL.createObjectURL(imageBlob);
+                  }
                 } else {
-                  const dec = await decMessage(authUser.email, msg.receiverContent);
-                  decryptedText = dec.message;
+                  if (msg.receiverContent) {
+                    const dec = await decMessage(authUser.email, msg.receiverContent);
+                    decryptedText = dec.message;
+                  }
+                  if (msg.receiverFileTag) {
+                    const response = await fetch(msg.receiverFileTag.src);
+                    const buffer = await response.arrayBuffer();
+                    const image= await decFile(authUser.email, msg.receiverFileTag, new Uint8Array(buffer));
+                    const imageBlob = new Blob([image], {type: msg.receiverFileTag.fileType});
+                    imageObjectUrl = URL.createObjectURL(imageBlob);
+                  }
                 }
                 console.log(decryptedText);
                 
@@ -57,7 +76,7 @@ export const useChatStore = create((set, get) => ({
                 console.error("Failed to decrypt message:", msg, e);
               }
             }
-            return { ...msg, text: decryptedText};
+            return { ...msg, text: decryptedText, image: imageObjectUrl};
           })
       )
       set({ messages: decryptedMessages});
@@ -81,6 +100,75 @@ export const useChatStore = create((set, get) => ({
         receiverEncrypted = await encMessage(selectedUser.publicKey, plaintext);
         senderEncrypted = await encMessage(authUser.publicKey, plaintext);
       }
+      const imageURL = messageData.image;
+      let receiverInfo= null;
+      let receiverImage = null;
+      let senderInfo= null;
+      let senderImage = null;
+      if (imageURL) {
+        // handle url and get image data, filename and type
+        const responseImage = await fetch(imageURL);
+        const contentType = responseImage.headers.get("content-type");
+        let fileName;
+        const disposition = responseImage.headers.get("content-disposition");
+        if (disposition) {
+          const match = disposition.match(/filename="(.+)"/);
+          if (match) fileName = match[1];
+        } else {
+          const url = new URL(imageURL);
+          fileName = url.pathname.split("/").pop() || "file";
+        }
+
+        // image raw data
+        const imageBuffer = await responseImage.arrayBuffer();
+
+        // image encryption by receiver's key
+        [receiverInfo, receiverImage] = await encFile(selectedUser.publicKey, imageBuffer);
+        // fetch cloud upload url
+        const responseRec = await axiosInstance.get('/messages/upload', {params: {fileName: fileName}});
+        const dataRec = responseRec.data;
+        const formRec = new FormData();
+        const fileBlobRec = new Blob([receiverImage], {type: 'application/octet-stream'});
+        formRec.append("file", fileBlobRec, fileName);
+        console.log("filename:", fileName);
+        formRec.append("api_key", dataRec.apiKey);
+        formRec.append("timestamp", dataRec.timestamp);
+        formRec.append("signature", dataRec.signature);
+        formRec.append("public_id", dataRec.publicId);
+        // upload encrypted image to cloud
+        await fetch(dataRec.uploadEndpoint, {
+          method: "POST",
+          body: formRec
+        });
+        receiverInfo.src = dataRec.finalFileUrl;
+        receiverInfo.fileType = contentType;
+        receiverInfo.fileName = fileName;
+        receiverInfo.fileSize = receiverImage.length;
+
+        // image encryption by sender's key
+        [senderInfo, senderImage] = await encFile(authUser.publicKey, imageBuffer);
+        // fetch cloud upload url
+        const responseSen= await axiosInstance.get('/messages/upload', {params: {fileName: fileName}});
+        const dataSen = responseSen.data;
+        const formSen = new FormData();
+        const fileBlobSen= new Blob([senderImage], {type: 'application/octet-stream'});
+        formSen.append("file", fileBlobSen, fileName);
+        formSen.append("api_key", dataSen.apiKey);
+        formSen.append("timestamp", dataSen.timestamp);
+        formSen.append("signature", dataSen.signature);
+        formSen.append("public_id", dataSen.publicId);
+        // upload encrypted image to cloud
+        await fetch(dataSen.uploadEndpoint, {
+          method: "POST",
+          body: formSen
+        });
+        senderInfo.src = dataSen.finalFileUrl;
+        senderInfo.fileType = contentType;
+        senderInfo.fileName = fileName;
+        senderInfo.fileSize = senderImage.length;
+      }
+
+      // splice the payload for sending
       const payload = {
         senderId: authUser._id,
         receiverId: selectedUser._id,
@@ -90,9 +178,14 @@ export const useChatStore = create((set, get) => ({
             receiverContent: receiverEncrypted,
             senderContent: senderEncrypted,
           }),
-        ...(messageData.image && { image: messageData.image }),
+        ...(imageURL &&
+          {
+            receiverFileTag: receiverInfo,
+            senderFileTag: senderInfo,
+          }),
       };
       console.log(payload);
+      // send info to server and store it in db
       const res = await axiosInstance.post(
         `/messages/send/${selectedUser._id}`,
           payload
@@ -102,6 +195,7 @@ export const useChatStore = create((set, get) => ({
           {
             ...res.data,
             text: plaintext,
+            image: imageURL,
           },], });
     } catch (error) {
       toast.error(error.response?.data?.message || error.messages || "Failed to send messages");

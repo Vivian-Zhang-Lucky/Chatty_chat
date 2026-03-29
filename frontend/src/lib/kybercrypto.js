@@ -101,44 +101,29 @@ async function deriveAesGcmKey(sharedSecret, salt) {
     );
 }
 
-/**
- *
- * @param {Uint8Array}sharedKey
- * @param {Uint8Array}iv
- * @param plaintext
- * @returns {Promise<{ciphertext: Uint8Array, salt: Uint8Array}>}
- */
-async function aesGcmEncrypt(sharedKey, iv, plaintext) {
+async function aesGcmEncrypt(sharedKey, iv, array) {
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const aesKey = await deriveAesGcmKey(sharedKey, salt);
 
     const encryptedBuffer = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv },
         aesKey,
-        new TextEncoder().encode(plaintext)
+        array
     );
 
     return { salt, ciphertext: new Uint8Array(encryptedBuffer) };
 }
 
-/**
- *
- * @param {Uint8Array}sharedKey
- * @param {Uint8Array}salt
- * @param {Uint8Array}iv
- * @param {Uint8Array}ciphertext
- * @returns {Promise<string>}
- */
-async function aesGcmDecrypt(sharedKey, salt, iv, ciphertext) {
+async function aesGcmDecrypt(sharedKey, salt, iv, array) {
     const aesKey = await deriveAesGcmKey(sharedKey, salt);
 
     const decryptedBuffer = await crypto.subtle.decrypt(
         { name: "AES-GCM", iv },
         aesKey,
-        ciphertext
+        array
     );
 
-    return new TextDecoder().decode(decryptedBuffer);
+    return decryptedBuffer;
 }
 
 // Generate keypair
@@ -163,13 +148,6 @@ export async function generateKeyPair(name) {
     };
 }
 
-// Encrypt a message
-/**
- *
- * @param {string}publicKey
- * @param {string}message
- * @returns {Promise<{ct: string, salt: string, encrypted: string, iv: string}>}
- */
 export async function encMessage(publicKey, message) {
     let sharedSecret, ct;
 
@@ -192,8 +170,8 @@ export async function encMessage(publicKey, message) {
     }
 
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const { salt, ciphertext: encrypted } =
-        await aesGcmEncrypt(sharedSecret, iv, message);
+    const { salt, ciphertext: tag} =
+        await aesGcmEncrypt(sharedSecret, iv, (new TextEncoder).encode(message));
 
     // Log values as Base64
     console.log("message:", message);
@@ -202,24 +180,60 @@ export async function encMessage(publicKey, message) {
     console.log("ct:", u8ToBase64(ct));
     console.log("iv:", u8ToBase64(iv));
     console.log("salt:", u8ToBase64(salt));
-    console.log("encrypted:", u8ToBase64(encrypted));
+    console.log("encrypted:", u8ToBase64(tag));
 
     // Return Base64 values
     return {
         ct: u8ToBase64(ct),
         iv: u8ToBase64(iv),
         salt: u8ToBase64(salt),
-        encrypted: u8ToBase64(encrypted)
+        tag: u8ToBase64(tag)
     };
 }
 
-// Decrypt a message
-/**
- *
- * @param {string}name
- * @param cipherText
- * @returns {Promise<{message: string}>}
- */
+export async function encFile(publicKey, fileArray) {
+    const fileU8= new Uint8Array(fileArray);
+    let sharedSecret, ct;
+
+    const cachedSecret = await getKey(base64ToU8(publicKey));
+
+    if (cachedSecret !== undefined) {
+        sharedSecret = cachedSecret;
+        ct = await getKey(cachedSecret);
+    }
+
+    if (ct === undefined) {
+        const { ciphertext, sharedSecret: ss } =
+            await kem.encapsulate(base64ToU8(publicKey));
+
+        sharedSecret = ss;
+        ct = ciphertext;
+
+        await setKey(base64ToU8(publicKey), sharedSecret);
+        await setKey(sharedSecret, ct);
+    }
+
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const { salt, ciphertext: tag} =
+        await aesGcmEncrypt(sharedSecret, iv, fileU8);
+
+    // Log values as Base64
+    console.log("message:", u8ToBase64(fileU8));
+    console.log("pkey:", publicKey);
+    console.log("shared:", u8ToBase64(sharedSecret));
+    console.log("ct:", u8ToBase64(ct));
+    console.log("iv:", u8ToBase64(iv));
+    console.log("salt:", u8ToBase64(salt));
+    console.log("encrypted:", u8ToBase64(tag));
+
+    // Return Base64 values
+    return [{
+        ct: u8ToBase64(ct),
+        iv: u8ToBase64(iv),
+        salt: u8ToBase64(salt)
+    }, tag];
+}
+
 export async function decMessage(name, cipherText) {
     const skey = await getKey(name);
     if (!skey) throw new Error(`Private key for '${name}' not found`);
@@ -228,7 +242,7 @@ export async function decMessage(name, cipherText) {
     console.log("skey:", u8ToBase64(skey));
 
     console.log("ct:", cipherText.ct);
-    console.log("encrypted:", cipherText.encrypted);
+    console.log("encrypted:", cipherText.tag);
     console.log("iv:", cipherText.iv);
 
     const { sharedSecret } =
@@ -237,25 +251,47 @@ export async function decMessage(name, cipherText) {
     console.log("shared:", u8ToBase64(sharedSecret));
     console.log("salt:", cipherText.salt);
 
-    const decrypted = await aesGcmDecrypt(
+    const decrypted = (new TextDecoder).decode(await aesGcmDecrypt(
         sharedSecret,
         base64ToU8(cipherText.salt),
         base64ToU8(cipherText.iv),
-        base64ToU8(cipherText.encrypted)
-    );
+        base64ToU8(cipherText.tag)
+    ));
 
     console.log("decrypted:", decrypted);
 
     return { message: decrypted };
 }
 
-// Decrypt my message
-/**
- *
- * @param {string}publicKey
- * @param cipherText
- * @returns {Promise<{message: string}>}
- */
+export async function decFile(name, fileTag, tag) {
+    const skey = await getKey(name);
+    if (!skey) throw new Error(`Private key for '${name}' not found`);
+
+    console.log("name:", name);
+    console.log("skey:", u8ToBase64(skey));
+
+    console.log("ct:", fileTag.ct);
+    console.log("encrypted:", tag);
+    console.log("iv:", fileTag.iv);
+
+    const { sharedSecret } =
+        await kem.decapsulate(base64ToU8(fileTag.ct), skey);
+
+    console.log("shared:", u8ToBase64(sharedSecret));
+    console.log("salt:", fileTag.salt);
+
+    const decrypted = await aesGcmDecrypt(
+        sharedSecret,
+        base64ToU8(fileTag.salt),
+        base64ToU8(fileTag.iv),
+        tag
+    );
+
+    console.log("decrypted:", decrypted);
+
+    return decrypted;
+}
+
 export async function decMyMessage(publicKey, cipherText) {
     if (!publicKey) throw new Error(`SelectedUser's public key not found`);
 
@@ -270,12 +306,12 @@ export async function decMyMessage(publicKey, cipherText) {
     console.log("shared:", u8ToBase64(cachedSecret));
     console.log("salt:", cipherText.salt);
 
-    const decrypted = await aesGcmDecrypt(
+    const decrypted = (new TextDecoder).decode(await aesGcmDecrypt(
         cachedSecret,
         base64ToU8(cipherText.salt),
         base64ToU8(cipherText.iv),
         base64ToU8(cipherText.encrypted)
-    );
+    ));
 
     console.log("decrypted:", decrypted);
 
