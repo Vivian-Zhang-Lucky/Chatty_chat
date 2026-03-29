@@ -192,7 +192,7 @@ export async function encMessage(publicKey, message) {
 }
 
 export async function encFile(publicKey, fileArray) {
-    const fileU8= new Uint8Array(fileArray);
+    const fileU8= base64ToU8(fileArray);
     let sharedSecret, ct;
 
     const cachedSecret = await getKey(base64ToU8(publicKey));

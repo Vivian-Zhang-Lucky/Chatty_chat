@@ -2,7 +2,7 @@ import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
 import { useAuthStore } from "./useAuthStore";
-import { encMessage, decMessage, encFile, decFile } from "../lib/kybercrypto.js";
+import {encMessage, decMessage, encFile, decFile, base64ToU8} from "../lib/kybercrypto.js";
 
 export const useChatStore = create((set, get) => ({
   messages: [],
@@ -39,7 +39,7 @@ export const useChatStore = create((set, get) => ({
       const decryptedMessages = await Promise.all(
           res.data.map(async (msg) => {
             let decryptedText= null;
-            let imageObjectUrl;
+            let imageDataURL;
 
             // if (msg.content?.encrypted && authUser?.email) {
             if (authUser?.email) {
@@ -55,7 +55,11 @@ export const useChatStore = create((set, get) => ({
                     const buffer = await response.arrayBuffer();
                     const image = await decFile(authUser.email, msg.senderFileTag, new Uint8Array(buffer));
                     const imageBlob = new Blob([image], {type: msg.senderFileTag.fileType});
-                    imageObjectUrl = URL.createObjectURL(imageBlob);
+                    imageDataURL = await new Promise((resolve) => {
+                      const reader = new FileReader();
+                      reader.onload = () => resolve(reader.result);
+                      reader.readAsDataURL(imageBlob);
+                    });
                   }
                 } else {
                   if (msg.receiverContent) {
@@ -67,7 +71,11 @@ export const useChatStore = create((set, get) => ({
                     const buffer = await response.arrayBuffer();
                     const image= await decFile(authUser.email, msg.receiverFileTag, new Uint8Array(buffer));
                     const imageBlob = new Blob([image], {type: msg.receiverFileTag.fileType});
-                    imageObjectUrl = URL.createObjectURL(imageBlob);
+                    imageDataURL = await new Promise((resolve) => {
+                      const reader = new FileReader();
+                      reader.onload = () => resolve(reader.result);
+                      reader.readAsDataURL(imageBlob);
+                    });
                   }
                 }
                 console.log(decryptedText);
@@ -76,7 +84,7 @@ export const useChatStore = create((set, get) => ({
                 console.error("Failed to decrypt message:", msg, e);
               }
             }
-            return { ...msg, text: decryptedText, image: imageObjectUrl};
+            return { ...msg, text: decryptedText, image: imageDataURL};
           })
       )
       set({ messages: decryptedMessages});
@@ -101,29 +109,21 @@ export const useChatStore = create((set, get) => ({
         senderEncrypted = await encMessage(authUser.publicKey, plaintext);
       }
       const imageURL = messageData.image;
+      console.log("imageURL: ", imageURL);
       let receiverInfo= null;
       let receiverImage = null;
       let senderInfo= null;
       let senderImage = null;
       if (imageURL) {
         // handle url and get image data, filename and type
-        const responseImage = await fetch(imageURL);
-        const contentType = responseImage.headers.get("content-type");
-        let fileName;
-        const disposition = responseImage.headers.get("content-disposition");
-        if (disposition) {
-          const match = disposition.match(/filename="(.+)"/);
-          if (match) fileName = match[1];
-        } else {
-          const url = new URL(imageURL);
-          fileName = url.pathname.split("/").pop() || "file";
-        }
-
-        // image raw data
-        const imageBuffer = await responseImage.arrayBuffer();
+        const matches = imageURL.match(/^data:(.+);base64,(.+)$/);
+        if (!matches) throw new Error("Invalid imageURL");
+        const contentType = matches[1];
+        const image64= matches[2];
+        const fileName = `upload_${Date.now()}`;
 
         // image encryption by receiver's key
-        [receiverInfo, receiverImage] = await encFile(selectedUser.publicKey, imageBuffer);
+        [receiverInfo, receiverImage] = await encFile(selectedUser.publicKey, image64);
         // fetch cloud upload url
         const responseRec = await axiosInstance.get('/messages/upload', {params: {fileName: fileName}});
         const dataRec = responseRec.data;
@@ -136,17 +136,21 @@ export const useChatStore = create((set, get) => ({
         formRec.append("signature", dataRec.signature);
         formRec.append("public_id", dataRec.publicId);
         // upload encrypted image to cloud
-        await fetch(dataRec.uploadEndpoint, {
+        const resUpload = await fetch(dataRec.uploadEndpoint, {
           method: "POST",
           body: formRec
         });
+        if (!resUpload.ok) {
+          const result = await resUpload.json();
+          throw Error("upload failed: ", result);
+        }
         receiverInfo.src = dataRec.finalFileUrl;
         receiverInfo.fileType = contentType;
         receiverInfo.fileName = fileName;
         receiverInfo.fileSize = receiverImage.length;
 
         // image encryption by sender's key
-        [senderInfo, senderImage] = await encFile(authUser.publicKey, imageBuffer);
+        [senderInfo, senderImage] = await encFile(authUser.publicKey, image64);
         // fetch cloud upload url
         const responseSen= await axiosInstance.get('/messages/upload', {params: {fileName: fileName}});
         const dataSen = responseSen.data;
@@ -158,10 +162,14 @@ export const useChatStore = create((set, get) => ({
         formSen.append("signature", dataSen.signature);
         formSen.append("public_id", dataSen.publicId);
         // upload encrypted image to cloud
-        await fetch(dataSen.uploadEndpoint, {
+        const resUploadSen = await fetch(dataSen.uploadEndpoint, {
           method: "POST",
           body: formSen
         });
+        if (!resUploadSen.ok) {
+          const result = await resUploadSen.json();
+          throw Error("upload failed: ", result);
+        }
         senderInfo.src = dataSen.finalFileUrl;
         senderInfo.fileType = contentType;
         senderInfo.fileName = fileName;
