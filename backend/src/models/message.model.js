@@ -1,7 +1,18 @@
 import mongoose from "mongoose";
 
-const messageSchema = new mongoose.Schema(
-  {
+export const MSG_TYPES = ["text", "image", "file"];
+
+const messageSchema = new mongoose.Schema( {
+    id:{
+      type: String,
+      required: true,
+      unique: true,
+    },
+    msgType: {
+      type: String,
+      enum: MSG_TYPES,
+      required: true,
+    },
     senderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -12,35 +23,53 @@ const messageSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    senderContent: {
-      iv: String,
-      ct: String,
-      salt: String,
-      tag: String,
+    textTag: {
+        senderTextTag: {
+            iv: String,
+            ct: String,
+            salt: String,
+            tag: String,
+        },
+        receiverTextTag: {
+            iv: String,
+            ct: String,
+            salt: String,
+            tag: String,
+        },
     },
-    receiverContent: {
-      iv: String,
-      ct: String,
-      salt: String,
-      tag: String,
+    imageTag: {
+        fileName: String,
+        fileType: String,
+        fileSize: Number,
+        senderImageTag: {
+            iv: String,
+            ct: String,
+            salt: String,
+            src: String,
+        },
+        receiverImageTag: {
+            iv: String,
+            ct: String,
+            salt: String,
+            src: String,
+        },
     },
-    senderFileTag: {
-      iv: String,
-      ct: String,
-      salt: String,
-      src: String,
-      fileName: String,
-      fileType: String,
-      fileSize: Number,
-    },
-    receiverFileTag: {
-      iv: String,
-      ct: String,
-      salt: String,
-      src: String,
-      fileName: String,
-      fileType: String,
-      fileSize: Number,
+    fileTag: {
+        fileName: String,
+        fileType: String,
+        fileSize: Number,
+        senderFileTag: {
+            iv: String,
+            ct: String,
+            salt: String,
+            src: String,
+        },
+        receiverFileTag: {
+            iv: String,
+            ct: String,
+            salt: String,
+            src: String,
+        },
     },
   },
   { timestamps: true },

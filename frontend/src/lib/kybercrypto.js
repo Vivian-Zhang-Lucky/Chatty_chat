@@ -292,33 +292,6 @@ export async function decFile(name, fileTag, tag) {
     return decrypted;
 }
 
-export async function decMyMessage(publicKey, cipherText) {
-    if (!publicKey) throw new Error(`SelectedUser's public key not found`);
-
-    const cachedSecret = await getKey(base64ToU8(publicKey));
-    if (!cachedSecret)
-        throw new Error("Shared secret for this public key not found");
-
-    console.log("publicKey:", publicKey);
-    console.log("ct:", cipherText.ct);
-    console.log("encrypted:", cipherText.encrypted);
-    console.log("iv:", cipherText.iv);
-    console.log("shared:", u8ToBase64(cachedSecret));
-    console.log("salt:", cipherText.salt);
-
-    const decrypted = (new TextDecoder).decode(await aesGcmDecrypt(
-        cachedSecret,
-        base64ToU8(cipherText.salt),
-        base64ToU8(cipherText.iv),
-        base64ToU8(cipherText.encrypted)
-    ));
-
-    console.log("decrypted:", decrypted);
-
-    return { message: decrypted };
-}
-
-
 export async function encryptPrivateKeyWithPassword(privateKey, password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));

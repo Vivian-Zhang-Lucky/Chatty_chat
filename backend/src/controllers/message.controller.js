@@ -1,5 +1,5 @@
   import User from "../models/user.model.js";
-import Message from "../models/message.model.js";
+import Message, {MSG_TYPES} from "../models/message.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
 
@@ -67,19 +67,23 @@ export const getMessages = async (req, res) => {
 
 export const sendMessage = async (req, res) => {
   try {
-    // const { content, image } = req.body;
-    const { senderContent, receiverContent, senderFileTag, receiverFileTag} = req.body;
+    const { id, msgType } = req.body;
     const { id: receiverId } = req.params;
     const senderId = req.user._id;
 
-    const newMessage = new Message({
+    const newMessageData = {
+      id,
       senderId,
       receiverId,
-      senderContent: senderContent ?? undefined,
-      receiverContent: receiverContent ?? undefined,
-      senderFileTag: senderFileTag ?? undefined,
-      receiverFileTag: receiverFileTag ?? undefined,
-    });
+      msgType: msgType,
+    };
+
+    if (!MSG_TYPES.includes(msgType)) {
+      throw new Error("Invalid message type" + msgType);
+    }
+
+    newMessageData[`${msgType}Tag`] = req.body[`${msgType}Tag`];
+    const newMessage = new Message(newMessageData);
     console.log("newMes:", newMessage);
 
     await newMessage.save();
