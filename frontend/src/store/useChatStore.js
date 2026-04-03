@@ -16,13 +16,24 @@ export const useChatStore = create((set, get) => ({
   generateMessage: (msg) => {
     const id = crypto.randomUUID();
     set(state => ({messages: [
-        ...state.messages,
-        {
-          ...msg ,
-          id: id,
-        },
+      ...state.messages,
+      {
+        ...msg,
+        id: id,
+      },
     ],}));
     return id;
+  },
+  updateMessage: (msg) => {
+    set(state => ({messages: state.messages.map(message => {
+      if (message.id === msg.id) {
+        return {
+          ...message,
+          ...msg,
+        };
+      }
+      return message;
+    })}));
   },
 
   getUsers: async () => {
@@ -117,19 +128,6 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
-  updateMsgBlob: (msgId, blob) => {
-    set(state => ({ messages: state.messages.map(msg => {
-        if (msg.id === msgId) {
-          return {
-            ...msg,
-            blob: blob,
-          };
-        }
-        return msg;
-      })
-    }));
-  },
-
   updateMsgProgress: (msgId, progress) => {
     set(state => ({ messages: state.messages.map(msg => {
       if (msg.id === msgId) {
@@ -148,30 +146,57 @@ export const useChatStore = create((set, get) => ({
     }));
   },
 
-  downloadFile: async (msg) => {
+  downloadFile: async (msg, dirHandle) => {
     if (msg.msgType !== "file") return;
     if (msg.fileState === "loading...") return;
+    if (!dirHandle) throw new Error("directory handle is null");
     try {
-      let msgFileTag;
-      if (useAuthStore.getState().authUser._id === msg.senderId) {
-        msgFileTag = msg.fileTag.senderFileTag;
-      } else msgFileTag = msg.fileTag.receiverFileTag;
+      const authUser = useAuthStore.getState().authUser;
+      const msgFileTag =
+          authUser._id === msg.senderId ? msg.fileTag.senderFileTag : msg.fileTag.receiverFileTag;
       get().updateMsgProgress(msg.id, 0);
-      const response = await fetch(msgFileTag.src);
-      get().updateMsgProgress(msg.id, 40);
-      const buffer = await response.arrayBuffer();
-      const file = await decFile(useAuthStore.getState().authUser.email, msgFileTag, new Uint8Array(buffer));
-      get().updateMsgProgress(msg.id, 80);
-      msg.blob = new Blob([file], {type: msgFileTag.fileType});
-      await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.readAsDataURL(msg.blob);
+      const fileHandle = await dirHandle.getFileHandle(msg.fileName, {
+        create: true,
       });
-      get().updateMsgBlob(msg.id, msg.blob);
+      const writable = await fileHandle.createWritable();
+      get().updateMsgProgress(msg.id, 10);
+      const response = await fetch(msgFileTag.src);
+      if (!response.body) throw new Error("Streaming not supported");
+      const reader = response.body.getReader();
+      let buffer = new Uint8Array(0);
+      let chunkIndex = 0;
+      let processedBytes = 0;
+      const chunks = msgFileTag.chunks;
+      get().updateMsgProgress(msg.id, 20);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // append streamed data
+        const temp = new Uint8Array(buffer.length + value.length);
+        temp.set(buffer);
+        temp.set(value, buffer.length);
+        buffer = temp;
+
+        while ( chunkIndex < chunks.length && buffer.length >= chunks[chunkIndex].size ) {
+          const meta = chunks[chunkIndex];
+          const size = meta.size;
+          const encryptedChunk = buffer.slice(0, size);
+          const decrypted = await decFile( authUser.email, meta, encryptedChunk );
+          await writable.write(decrypted);
+          // remove processed bytes
+          buffer = buffer.slice(size);
+          processedBytes += size;
+          chunkIndex++;
+          get().updateMsgProgress( msg.id, 20 + Math.floor((chunkIndex / chunks.length) * 70) );
+        }
+      }
+      await writable.close();
       get().updateMsgProgress(msg.id, 100);
+
     } catch (error) {
-      toast.error(error?.response?.data?.message);
+      toast.error(error?.response?.data?.message || error.message);
+      console.error("downloadFile error:", error);
     }
   },
 
@@ -195,89 +220,137 @@ export const useChatStore = create((set, get) => ({
       });
       get().updateMsgProgress(msg.id, 0);
 
-      // didn't do chunks but just treat it as one chunk
-      const file64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = reader.result;
-          resolve(dataUrl.split(",")[1]);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-
-      // file encryption by receiver's key
-      const [receiverInfo, receiverFile] = await encFile(selectedUser.publicKey, file64);
-      get().updateMsgProgress(msg.id, 20);
-
+      // fileTag is data for updating back-end
+      let fileTag = {};
+      fileTag.fileName = fileName;
+      fileTag.fileType = contentType;
+      fileTag.fileSize = file.size;
+      fileTag.receiverFileTag ??= {chunks:[]};
+      fileTag.senderFileTag ??= {chunks:[]};
+      // cloud chunks setting
+      const CLOUD_CHUNK = 5*1024*1024;
+      let uploadIdRec = null;
+      let uploadIdSen = null;
+      let partStartRec = 0;
+      let partStartSen = 0;
+      let uploadBufferRec = [];
+      let uploadBufferSen = [];
+      let uploadSizeRec = 0;
+      let uploadSizeSen = 0;
+      let srcRec ="";
+      let srcSen = "";
+      // AES chunks setting
+      const AES_CHUNK= 64*1024;
+      let offset = 0;
       // fetch cloud upload url
       const responseRec = await axiosInstance.get('/messages/upload', {params: {fileName: fileName}});
       const dataRec = responseRec.data;
-      const formRec = new FormData();
-      const fileBlobRec = new Blob([receiverFile], {type: 'application/octet-stream'});
-      formRec.append("file", fileBlobRec, fileName);
-      console.log("filename:", fileName);
-      formRec.append("api_key", dataRec.apiKey);
-      formRec.append("timestamp", dataRec.timestamp);
-      formRec.append("signature", dataRec.signature);
-      formRec.append("public_id", dataRec.publicId);
-      get().updateMsgProgress(msg.id, 30);
-
-      // upload encrypted image to cloud
-      const resUpload = await fetch(dataRec.uploadEndpoint, {
-        method: "POST",
-        body: formRec
-      });
-      if (!resUpload.ok) {
-        const result = await resUpload.json();
-        console.error("upload failed: " + JSON.stringify(result));
-        return;
-      }
-      receiverInfo.src = dataRec.finalFileUrl;
-      get().updateMsgProgress(msg.id, 50);
-
-      // image encryption by sender's key
-      const [senderInfo, senderFile] = await encFile(authUser.publicKey, file64);
-      get().updateMsgProgress(msg.id, 70);
-
       // fetch cloud upload url
-      const responseSen= await axiosInstance.get('/messages/upload', {params: {fileName: fileName}});
+      const responseSen = await axiosInstance.get('/messages/upload', {params: {fileName: fileName}});
       const dataSen = responseSen.data;
-      const formSen = new FormData();
-      const fileBlobSen= new Blob([senderFile], {type: 'application/octet-stream'});
-      formSen.append("file", fileBlobSen, fileName);
-      formSen.append("api_key", dataSen.apiKey);
-      formSen.append("timestamp", dataSen.timestamp);
-      formSen.append("signature", dataSen.signature);
-      formSen.append("public_id", dataSen.publicId);
-      get().updateMsgProgress(msg.id, 80);
 
-      // upload encrypted image to cloud
-      const resUploadSen = await fetch(dataSen.uploadEndpoint, {
-        method: "POST",
-        body: formSen
-      });
-      if (!resUploadSen.ok) {
-        const result = await resUploadSen.json();
-        console.error("upload failed: " + JSON.stringify(result));
-        return;
+      // split file into chunks otherwise it will crash the stack
+      while (offset < file.size) {
+        const slice = file.slice(offset, offset + AES_CHUNK);
+        const file64 = await slice.arrayBuffer();
+
+        // file encryption
+        const [receiverChunk, receiverFile] = await encFile(selectedUser.publicKey, file64);
+        const [senderChunk, senderFile] = await encFile(authUser.publicKey, file64);
+        fileTag.receiverFileTag.chunks.push({...receiverChunk, size: receiverFile.length});
+        fileTag.senderFileTag.chunks.push({...senderChunk, size: senderFile.length});
+        uploadBufferRec.push(receiverFile);
+        uploadBufferSen.push(senderFile);
+        uploadSizeRec += receiverFile.length;
+        uploadSizeSen += senderFile.length;
+
+        const isLastChunkRec = (offset+AES_CHUNK) >= file.size;
+        if (uploadSizeRec >= CLOUD_CHUNK || isLastChunkRec ) {
+          const startRec = partStartRec;
+          const endRec = partStartRec + uploadSizeRec - 1;
+          const totalRec = isLastChunkRec ? (endRec + 1) : "*";
+
+          const formRec = new FormData();
+          const fileBlobRec = new Blob(uploadBufferRec, {type: 'application/octet-stream'});
+          formRec.append("file", fileBlobRec);
+          formRec.append("fileName", fileName);
+          console.log("filename:", fileName);
+          formRec.append("api_key", dataRec.apiKey);
+          formRec.append("timestamp", dataRec.timestamp);
+          formRec.append("signature", dataRec.signature);
+          formRec.append("public_id", dataRec.publicId);
+
+          // upload encrypted image to cloud
+          const resUploadRec = await fetch(dataRec.uploadEndpoint, {
+            method: "POST",
+            headers: {
+              "Content-Range": `bytes ${startRec}-${endRec}/${totalRec}`,
+              ...(uploadIdRec && {"X-Unique-Upload-Id": uploadIdRec}),
+            },
+            body: formRec
+          });
+          const resultRec = await resUploadRec.json();
+          if (!uploadIdRec) uploadIdRec = resultRec.upload_id;
+
+          srcRec = dataRec.finalFileUrl;
+
+          //reset uploadBuffer
+          uploadBufferRec = [];
+          uploadSizeRec = 0;
+          partStartRec = endRec + 1;
+
+        }
+
+        const isLastChunkSen = (offset+AES_CHUNK) >= file.size;
+        if (uploadSizeSen >= CLOUD_CHUNK || isLastChunkSen ) {
+          const startSen = partStartSen;
+          const endSen = partStartSen + uploadSizeSen - 1;
+          const totalSen = isLastChunkSen ? (endSen + 1):"*";
+          const formSen = new FormData();
+          const fileBlobSen = new Blob(uploadBufferSen, {type: 'application/octet-stream'});
+          formSen.append("file", fileBlobSen);
+          formSen.append("fileName", fileName);
+          formSen.append("api_key", dataSen.apiKey);
+          formSen.append("timestamp", dataSen.timestamp);
+          formSen.append("signature", dataSen.signature);
+          formSen.append("public_id", dataSen.publicId);
+
+          // upload encrypted image to cloud
+          const resUploadSen = await fetch(dataSen.uploadEndpoint, {
+            method: "POST",
+            headers: {
+              "Content-Range": `bytes ${startSen}-${endSen}/${totalSen}`,
+              ...(uploadIdSen && {"X-Unique-Upload-Id": uploadIdSen}),
+            },
+            body: formSen
+          });
+          const resultSen = await resUploadSen.json();
+          if (!uploadIdSen) uploadIdSen = resultSen.upload_id;
+
+          srcSen = dataSen.finalFileUrl;
+
+          //reset uploadBuffer
+          uploadBufferSen = [];
+          uploadSizeSen = 0;
+          partStartSen = endSen + 1;
+
+        }
+
+        //adjust offset
+        offset += AES_CHUNK;
+        get().updateMsgProgress(msg.id, offset/(file.size+AES_CHUNK));
       }
-      senderInfo.src = dataSen.finalFileUrl;
-      get().updateMsgProgress(msg.id, 90);
+      fileTag.receiverFileTag.src = srcRec;
+      fileTag.senderFileTag.src = srcSen;
 
       // splice the payload for sending
       const payload = {
+        ...msg,
         id: msg.id,
         msgType: "file",
         senderId: authUser._id,
         receiverId: selectedUser._id,
-        fileTag: {
-          receiverFileTag: receiverInfo,
-          senderFileTag: senderInfo,
-          fileName: fileName,
-          fileType: contentType,
-          fileSize: file.size,
-        },
+        fileTag: fileTag,
       };
       console.log(payload);
       // send info to server and store it in db
@@ -289,7 +362,7 @@ export const useChatStore = create((set, get) => ({
         console.error("Invalid response from server");
         return;
       }
-      msg.fileTag = payload.fileTag;
+      get().updateMessage(res.data);
       get().updateMsgProgress(msg.id, 100);
     } catch (error) {
       get().updateMsgProgress(msg.id, -1);
@@ -400,7 +473,7 @@ export const useChatStore = create((set, get) => ({
       if (!res?.data) {
         console.error("Invalid response from server");
       }
-      msg.imageTag = payload.imageTag;
+      get().updateMessage(res.data);
     } catch (error) {
       toast.error(error.response?.data?.message || error.messages || "Failed to send messages");
       console.error("sendMessage error", error);
@@ -441,7 +514,7 @@ export const useChatStore = create((set, get) => ({
       if (!res?.data) {
         console.error("Invalid response from server");
       }
-      msg.textTag = payload.textTag;
+      get().updateMessage(res.data);
     } catch (error) {
       toast.error(error.response?.data?.message || error.messages || "Failed to send messages");
       console.error("sendMessage error", error);

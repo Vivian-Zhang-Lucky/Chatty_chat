@@ -6,6 +6,7 @@ import MessageInput from "./MessageInput";
 import MessageSkeleton from "./skeletons/MessageSkeleton";
 import { useAuthStore } from "../store/useAuthStore";
 import { formatMessageTime } from "../lib/utils";
+import toast from "react-hot-toast";
 
 const ChatContainer = () => {
   const {
@@ -20,6 +21,7 @@ const ChatContainer = () => {
   const { authUser } = useAuthStore();
   const messageEndRef = useRef(null);
   const downloadingRef = useRef(new Set());
+  const directoryRef = useRef(null);
 
   useEffect(() => {
     getMessages(selectedUser._id);
@@ -54,16 +56,17 @@ const ChatContainer = () => {
     if (downloadingRef.current.has(message.id)) return;
     downloadingRef.current.add(message.id);
     try {
-      if (message.fileProgress === 100 && message.blob instanceof Blob) {
-        const url = URL.createObjectURL(message.blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = message.fileName;
-        a.click();
-        URL.revokeObjectURL(url);
-      } else {
-        await downloadFile(message);
+      let directoryHandle = directoryRef.current;
+      if (!directoryHandle) {
+        directoryHandle = await window.showDirectoryPicker();
+        const permissionStatus = await directoryHandle.requestPermission({mode: 'readwrite'},);
+        if (permissionStatus !== 'granted') {
+          toast.error("Permission denied. Cannot write to this folder.");
+          return;
+        }
+        directoryRef.current = directoryHandle;
       }
+      await downloadFile(message, directoryHandle);
     } catch (error) {
       console.error("Download file failed: ",  error);
     } finally {

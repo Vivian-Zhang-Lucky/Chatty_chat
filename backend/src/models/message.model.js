@@ -59,16 +59,22 @@ const messageSchema = new mongoose.Schema( {
         fileType: String,
         fileSize: Number,
         senderFileTag: {
-            iv: String,
-            ct: String,
-            salt: String,
             src: String,
+            chunks: [{
+                iv: String,
+                ct: String,
+                salt: String,
+                size: Number,
+            }],
         },
         receiverFileTag: {
-            iv: String,
-            ct: String,
-            salt: String,
             src: String,
+            chunks: [{
+                iv: String,
+                ct: String,
+                salt: String,
+                size: Number
+            }],
         },
     },
   },

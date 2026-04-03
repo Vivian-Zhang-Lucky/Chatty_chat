@@ -11,15 +11,68 @@ export async function initKyberLib () {
 }
 
 export function u8ToBase64(u8) {
-    return btoa(String.fromCharCode(...u8));
+    let binary = "";
+    const chunkSize = 0x8000; // 32KB chunks
+
+    for (let i = 0; i < u8.length; i += chunkSize) {
+        const subarray = u8.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, subarray);
+    }
+
+    return btoa(binary);
 }
 export function base64ToU8(b64) {
+    b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
+
     const binaryString = atob(b64);
-    const u8 = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
+    const len = binaryString.length;
+    const u8 = new Uint8Array(len);
+
+    for (let i = 0; i < len; i++) {
         u8[i] = binaryString.charCodeAt(i);
     }
+
     return u8;
+}
+
+export function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000; // avoid stack overflow
+
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        const subarray = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode(...subarray);
+    }
+
+    return btoa(binary);
+}
+
+export function base64ToArrayBuffer(b64) {
+    b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
+
+    const binaryString = atob(b64);
+    const len = binaryString.length;
+
+    const buffer = new ArrayBuffer(len);
+    const bytes = new Uint8Array(buffer);
+
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    return buffer;
+}
+
+export function arrayBufferToU8(buffer) {
+    return new Uint8Array(buffer);
+}
+
+export function u8ToArrayBuffer(u8) {
+    return u8.buffer.slice(
+        u8.byteOffset,
+        u8.byteOffset + u8.byteLength
+    );
 }
 
 // IndexedDB helpers for storing Uint8Array
@@ -192,7 +245,11 @@ export async function encMessage(publicKey, message) {
 }
 
 export async function encFile(publicKey, fileArray) {
-    const fileU8= base64ToU8(fileArray);
+    let fileU8;
+    if (typeof fileArray === "string") fileU8= base64ToU8(fileArray);
+    else if (fileArray instanceof ArrayBuffer) fileU8 = arrayBufferToU8(fileArray);
+    else if (fileArray instanceof Uint8Array) fileU8 = fileArray;
+
     let sharedSecret, ct;
 
     const cachedSecret = await getKey(base64ToU8(publicKey));
@@ -264,6 +321,11 @@ export async function decMessage(name, cipherText) {
 }
 
 export async function decFile(name, fileTag, tag) {
+    let fileU8;
+    if (typeof tag === "string") fileU8= base64ToU8(tag);
+    else if (tag instanceof ArrayBuffer) fileU8 = arrayBufferToU8(tag);
+    else if (tag instanceof Uint8Array) fileU8 = tag;
+
     const skey = await getKey(name);
     if (!skey) throw new Error(`Private key for '${name}' not found`);
 
@@ -271,7 +333,7 @@ export async function decFile(name, fileTag, tag) {
     console.log("skey:", u8ToBase64(skey));
 
     console.log("ct:", fileTag.ct);
-    console.log("encrypted:", tag);
+    console.log("encrypted:", fileU8);
     console.log("iv:", fileTag.iv);
 
     const { sharedSecret } =
@@ -284,7 +346,7 @@ export async function decFile(name, fileTag, tag) {
         sharedSecret,
         base64ToU8(fileTag.salt),
         base64ToU8(fileTag.iv),
-        tag
+        fileU8,
     );
 
     console.log("decrypted:", decrypted);
